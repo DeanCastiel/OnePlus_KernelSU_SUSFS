@@ -148,9 +148,24 @@ jobs:
           cp -r susfs4ksu/kernel_patches/fs/* kernel_platform/common/fs/
           cp -r susfs4ksu/kernel_patches/include/linux/* kernel_platform/common/include/linux/
           cd kernel_platform/common
-          echo "=== applying SUSFS ==="
-          patch -p1 --forward < "$(basename "$PATCH")"
-          echo "SUSFS patch applied cleanly"
+          echo "=== pre-check: namespace.c context ==="
+          grep -n 'trace/hooks/blk.h' fs/namespace.c || echo "no blk.h hook (expected on OnePlus SM8550)"
+          echo "=== applying SUSFS with fuzz ==="
+          patch -p1 -F 3 --forward < "$(basename "$PATCH")" || true
+          echo "=== check rejects ==="
+          find fs -name '*.rej' -o -name '*.orig' 2>/dev/null | tee /tmp/susfs_rejects.txt
+          if [ -s /tmp/susfs_rejects.txt ]; then
+            echo "::warning::SUSFS produced reject files:"
+            cat /tmp/susfs_rejects.txt
+            echo "=== reject contents ==="
+            find fs -name '*.rej' -exec cat {} \;
+          fi
+          # 硬失败：存在 reject 说明有功能块没进去，必须人工确认
+          if find fs -name '*.rej' | grep -q .; then
+            echo "::error::SUSFS patch left reject files, build cannot continue safely"
+            exit 1
+          fi
+          echo "SUSFS patch applied without rejects"
 
       - name: Apply builtin syscall hooks
         run: |
