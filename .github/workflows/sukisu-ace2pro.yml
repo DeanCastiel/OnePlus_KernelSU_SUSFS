@@ -184,11 +184,13 @@ jobs:
           test -f "$FILE" || { echo "::error::$FILE missing"; exit 1; }
           # SUSFS 补丁在 show_map_vma 内留下未初始化的 `struct dentry *dentry;`；
           # 一加的 show_map_vma 不走该分支，Clang 报 -Wsometimes-uninitialized（-Werror 致命）。
-          # 修法：把该声明就地初始化为 NULL。用宽松匹配（任意缩进/行尾空白）。
+          # 修法：把该声明就地初始化为 NULL。用固定字符串全局替换，避免行尾/缩进差异。
           echo "=== before ==="
           grep -n 'struct dentry \*dentry' "$FILE" || echo "(none)"
-          # 用 perl 做行级替换：仅匹配以该声明结尾的行，保留原有缩进
-          perl -i -pe 's{^(\s*)struct dentry \*dentry\s*;\s*$}{$1struct dentry *dentry = NULL;\n}' "$FILE"
+          grep -c 'struct dentry \*dentry;' "$FILE" || true
+          perl -i -pe 's/\Qstruct dentry *dentry;\E/struct dentry *dentry = NULL;/g' "$FILE"
+          # 若存在带空白的变体，再兜底处理一次
+          perl -i -pe 's/\Qstruct dentry *dentry\E(\s*);\s*$/struct dentry *dentry = NULL;$1\n/ unless /=\s*NULL/' "$FILE"
           echo "=== after ==="
           grep -n 'struct dentry \*dentry' "$FILE" || echo "(none)"
           COUNT=$(grep -c 'struct dentry \*dentry' "$FILE" || true)
@@ -270,6 +272,10 @@ jobs:
           set -euo pipefail
           cd kernel_workspace
           mkdir -p build-logs
+          # -Wno-sometimes-uninitialized：SUSFS 补丁在 OnePlus 版 show_map_vma 中
+          # 留下未初始化的 dentry（该分支实际不会进入），Clang 在 -Werror 下判为错误。
+          # 用 Clang 官方抑制开关放行，不改变补丁逻辑。
+          export KCFLAGS="-Wno-sometimes-uninitialized -Wno-error=sometimes-uninitialized"
           LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 \
             ./kernel_platform/oplus/build/oplus_build_kernel.sh "${OP_SOC}" "${{ inputs.build_method }}" \
             2>&1 | tee build-logs/compile.log
