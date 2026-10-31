@@ -182,24 +182,24 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           FILE=fs/proc/task_mmu.c
           test -f "$FILE" || { echo "::error::$FILE missing"; exit 1; }
-          # SUSFS 补丁在 show_map_vma 内声明了未初始化的 dentry；
+          # SUSFS 补丁在 show_map_vma 内留下未初始化的 `struct dentry *dentry;`；
           # 一加的 show_map_vma 不走该分支，Clang 报 -Wsometimes-uninitialized（-Werror 致命）。
-          # 正确修法：把该声明就地初始化为 NULL，而不是新增声明（否则 redefinition）。
-          if grep -q 'struct dentry \*dentry = NULL;' "$FILE"; then
-            echo "already initialized"
-          elif grep -q 'struct dentry \*dentry;' "$FILE"; then
-            sed -i 's/^\(\s*\)struct dentry \*dentry;$/\1struct dentry *dentry = NULL;/' "$FILE"
-            echo "initialized existing dentry declaration"
-          else
-            echo "::warning::no dentry declaration found (patch may not need it)"
-          fi
-          echo "=== verify ==="
-          grep -n 'struct dentry \*dentry' "$FILE" || echo "(no dentry declaration present)"
+          # 修法：把该声明就地初始化为 NULL。用宽松匹配（任意缩进/行尾空白）。
+          echo "=== before ==="
+          grep -n 'struct dentry \*dentry' "$FILE" || echo "(none)"
+          # 用 perl 做行级替换：仅匹配以该声明结尾的行，保留原有缩进
+          perl -i -pe 's{^(\s*)struct dentry \*dentry\s*;\s*$}{$1struct dentry *dentry = NULL;\n}' "$FILE"
+          echo "=== after ==="
+          grep -n 'struct dentry \*dentry' "$FILE" || echo "(none)"
           COUNT=$(grep -c 'struct dentry \*dentry' "$FILE" || true)
           COUNT=${COUNT:-0}
-          echo "dentry declaration count: $COUNT"
-          if [ "$COUNT" -gt 1 ]; then
-            echo "::error::multiple dentry declarations"
+          INIT=$(grep -c 'struct dentry \*dentry = NULL;' "$FILE" || true)
+          INIT=${INIT:-0}
+          echo "declarations: $COUNT, initialized: $INIT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::warning::no dentry declaration found; patch may already handle it"
+          elif [ "$INIT" -eq 0 ]; then
+            echo "::error::dentry declaration still uninitialized"
             exit 1
           fi
 
