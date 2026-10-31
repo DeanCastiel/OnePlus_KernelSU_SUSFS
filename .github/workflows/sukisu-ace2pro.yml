@@ -149,7 +149,16 @@ jobs:
           cp -r susfs4ksu/kernel_patches/include/linux/* kernel_platform/common/include/linux/
           cd kernel_platform/common
           echo "=== pre-check: namespace.c context ==="
-          grep -n 'trace/hooks/blk.h' fs/namespace.c || echo "no blk.h hook (expected on OnePlus SM8550)"
+          if grep -q 'trace/hooks/blk.h' fs/namespace.c; then
+            echo "blk.h hook already present"
+          else
+            # SUSFS hunk #1 的上下文锚定 internal.h 之后的 #include <trace/hooks/blk.h>，
+            # 一加 SM8550 源码缺少该行，导致 hunk 无法定位（fuzz 也救不了）。
+            # 这里按上游 GKI 形态补上 include，使补丁上下文对齐。
+            sed -i 's|^#include "internal.h"$|#include "internal.h"\n#include <trace/hooks/blk.h>|' fs/namespace.c
+            grep -n 'trace/hooks/blk.h' fs/namespace.c
+            echo "inserted trace/hooks/blk.h after internal.h"
+          fi
           echo "=== applying SUSFS with fuzz ==="
           patch -p1 -F 3 --forward < "$(basename "$PATCH")" || true
           echo "=== check rejects ==="
