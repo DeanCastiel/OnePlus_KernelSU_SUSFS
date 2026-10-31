@@ -182,19 +182,23 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           FILE=fs/proc/task_mmu.c
           test -f "$FILE" || { echo "::error::$FILE missing"; exit 1; }
-          # 一加源码的 show_map_vma 用 seq_file_path()，没有上游的 dentry 变量；
-          # SUSFS 补丁插入的分支引用了 dentry，Clang 报 -Wsometimes-uninitialized（-Werror 下致命）。
-          # 补一个初值为 NULL 的局部 dentry 声明，使补丁代码路径安全且不改变原语义。
-          # 用 sed 直接在该函数体起始行后插入声明，避免多行脚本嵌进 YAML 的缩进风险
+          # SUSFS 补丁在 show_map_vma 内声明了未初始化的 dentry；
+          # 一加的 show_map_vma 不走该分支，Clang 报 -Wsometimes-uninitialized（-Werror 致命）。
+          # 正确修法：把该声明就地初始化为 NULL，而不是新增声明（否则 redefinition）。
           if grep -q 'struct dentry \*dentry = NULL;' "$FILE"; then
-            echo "dentry already present"
+            echo "already initialized"
+          elif grep -q 'struct dentry \*dentry;' "$FILE"; then
+            sed -i 's/^\(\s*\)struct dentry \*dentry;$/\1struct dentry *dentry = NULL;/' "$FILE"
+            echo "initialized existing dentry declaration"
           else
-            perl -0pi -e 's/(show_map_vma\(struct seq_file \*m, struct vm_area_struct \*vma\)\n\{\n)/$1\tstruct dentry *dentry = NULL;\n/' "$FILE"
-            grep -q 'struct dentry \*dentry = NULL;' "$FILE" || { echo "::error::failed to insert dentry declaration"; exit 1; }
-            echo "inserted dentry = NULL"
+            echo "::warning::no dentry declaration found (patch may not need it)"
           fi
           echo "=== verify ==="
-          grep -n 'struct dentry \*dentry = NULL;' "$FILE"
+          grep -n 'struct dentry \*dentry' "$FILE"
+          # 防止重复声明导致 redefinition
+          COUNT=$(grep -c 'struct dentry \*dentry' "$FILE" || true)
+          echo "dentry declaration count: $COUNT"
+          test "$COUNT" -le 1 || { echo "::error::multiple dentry declarations"; exit 1; }
 
       - name: Apply builtin syscall hooks
         run: |
