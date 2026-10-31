@@ -185,21 +185,14 @@ jobs:
           # 一加源码的 show_map_vma 用 seq_file_path()，没有上游的 dentry 变量；
           # SUSFS 补丁插入的分支引用了 dentry，Clang 报 -Wsometimes-uninitialized（-Werror 下致命）。
           # 补一个初值为 NULL 的局部 dentry 声明，使补丁代码路径安全且不改变原语义。
-          python3 - "$FILE" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='surrogateescape').read()
-anchor = 'static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)\n{\n'
-if 'struct dentry *dentry = NULL;' in s:
-    print('dentry already present')
-elif anchor not in s:
-    print('::error::anchor not found in task_mmu.c')
-    sys.exit(1)
-else:
-    s = s.replace(anchor, anchor + '\tstruct dentry *dentry = NULL;\n', 1)
-    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
-    print('inserted dentry = NULL')
-PY
+          # 用 sed 直接在该函数体起始行后插入声明，避免多行脚本嵌进 YAML 的缩进风险
+          if grep -q 'struct dentry \*dentry = NULL;' "$FILE"; then
+            echo "dentry already present"
+          else
+            perl -0pi -e 's/(show_map_vma\(struct seq_file \*m, struct vm_area_struct \*vma\)\n\{\n)/$1\tstruct dentry *dentry = NULL;\n/' "$FILE"
+            grep -q 'struct dentry \*dentry = NULL;' "$FILE" || { echo "::error::failed to insert dentry declaration"; exit 1; }
+            echo "inserted dentry = NULL"
+          fi
           echo "=== verify ==="
           grep -n 'struct dentry \*dentry = NULL;' "$FILE"
 
