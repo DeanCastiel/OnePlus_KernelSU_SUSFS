@@ -194,11 +194,14 @@ jobs:
             echo "::warning::no dentry declaration found (patch may not need it)"
           fi
           echo "=== verify ==="
-          grep -n 'struct dentry \*dentry' "$FILE"
-          # 防止重复声明导致 redefinition
+          grep -n 'struct dentry \*dentry' "$FILE" || echo "(no dentry declaration present)"
           COUNT=$(grep -c 'struct dentry \*dentry' "$FILE" || true)
+          COUNT=${COUNT:-0}
           echo "dentry declaration count: $COUNT"
-          test "$COUNT" -le 1 || { echo "::error::multiple dentry declarations"; exit 1; }
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::multiple dentry declarations"
+            exit 1
+          fi
 
       - name: Apply builtin syscall hooks
         run: |
