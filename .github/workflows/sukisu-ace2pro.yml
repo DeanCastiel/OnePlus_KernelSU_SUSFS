@@ -104,42 +104,77 @@ jobs:
           set -euo pipefail
           cd kernel_workspace/kernel_platform
           git clone --filter=blob:none https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
-          cd KernelSU
-          git checkout --detach "${SUKISU_COMMIT}"
-          echo "SukiSU commit: $(git rev-parse HEAD)"
-          echo "SukiSU commit count: $(git rev-list --count HEAD)"
-          cd ..
-          DRIVER_DIR="$PWD/common/drivers"
-          ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$PWD/KernelSU/kernel")" "$DRIVER_DIR/kernelsu"
+          git -C KernelSU checkout --detach "${SUKISU_COMMIT}"
+          echo "SukiSU commit: $(git -C KernelSU rev-parse HEAD)"
+          KSU_DIR="$(realpath "$PWD/KernelSU")"
+          test -d "$KSU_DIR/kernel" || { echo "::error::KernelSU/kernel missing"; exit 1; }
+          # builtin 分支的 kernel/ 里是 Makefile（不是 Kbuild）
+          test -f "$KSU_DIR/kernel/Makefile" || { echo "::error::kernel/Makefile missing"; ls -la "$KSU_DIR/kernel"; exit 1; }
+          DRIVER_DIR="$(realpath "$PWD/common/drivers")"
+          echo "DRIVER_DIR=$DRIVER_DIR"
+          test -d "$DRIVER_DIR" || { echo "::error::drivers dir missing"; exit 1; }
+          # uapi 头文件在仓库根目录，内核按 "uapi/xxx.h" 引用
+          if [ -d "$KSU_DIR/uapi" ] && [ ! -e "$KSU_DIR/kernel/uapi" ]; then
+            ln -s ../uapi "$KSU_DIR/kernel/uapi"
+            echo "linked uapi -> kernel/uapi"
+          fi
+          ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$KSU_DIR/kernel")" "$DRIVER_DIR/kernelsu"
           grep -q 'kernelsu' "$DRIVER_DIR/Makefile" || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_DIR/Makefile"
           grep -q 'drivers/kernelsu/Kconfig' "$DRIVER_DIR/Kconfig" || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"
-          test -f "$DRIVER_DIR/kernelsu/Kbuild"
-          echo "=== integration done ==="
-          ls -l "$DRIVER_DIR/kernelsu"
+          echo "=== integration result ==="
+          ls -l "$DRIVER_DIR/kernelsu/"
+          tail -n 3 "$DRIVER_DIR/Makefile"
+          grep -n 'kernelsu' "$DRIVER_DIR/Kconfig"
 
-      - name: Apply SUSFS kernel patches
+      - name: Fetch patch repositories
         run: |
           set -euo pipefail
           cd kernel_workspace
           git clone --filter=blob:none https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
           git -C susfs4ksu checkout --detach "${SUSFS_COMMIT}"
           echo "SUSFS commit: $(git -C susfs4ksu rev-parse HEAD)"
+          git clone --filter=blob:none https://github.com/SukiSU-Ultra/SukiSU_patch.git SukiSU_patch
+          git -C SukiSU_patch checkout --detach "${SUKISU_PATCH_COMMIT}"
+          echo "SukiSU_patch commit: $(git -C SukiSU_patch rev-parse HEAD)"
+          ls susfs4ksu/kernel_patches/ | head -n 20
+
+      - name: Apply SUSFS kernel patches
+        run: |
+          set -euo pipefail
+          cd kernel_workspace
           PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
           test -f "$PATCH" || { echo "::error::missing SUSFS patch $PATCH"; ls susfs4ksu/kernel_patches/; exit 1; }
           cp "$PATCH" kernel_platform/common/
           cp -r susfs4ksu/kernel_patches/fs/* kernel_platform/common/fs/
           cp -r susfs4ksu/kernel_patches/include/linux/* kernel_platform/common/include/linux/
           cd kernel_platform/common
-          echo "=== applying SUSFS (hard fail) ==="
+          echo "=== applying SUSFS ==="
           patch -p1 --forward < "$(basename "$PATCH")"
           echo "SUSFS patch applied cleanly"
+
+      - name: Apply builtin syscall hooks
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform/common
+          HOOKS="$(realpath ../../SukiSU_patch/hooks)"
+          # builtin 分支不注册 kprobes，必须给内核源码打 hook 入口，否则 root 不生效
+          for p in syscall_hooks.patch scope_min_manual_hooks_v1.6.patch; do
+            if [ -f "$HOOKS/$p" ]; then
+              cp "$HOOKS/$p" .
+              echo "=== applying $p ==="
+              patch -p1 -F 3 --forward < "$p" || echo "::warning::$p partially applied"
+            else
+              echo "::warning::missing $HOOKS/$p"
+            fi
+          done
+          echo "=== hook verification ==="
+          grep -rn 'ksu_handle' fs/exec.c fs/open.c fs/stat.c 2>/dev/null | head -n 8 || echo "::warning::no ksu hooks found in fs/"
 
       - name: Apply hide_stuff patch
         run: |
           set -euo pipefail
           cd kernel_workspace
-          git clone --filter=blob:none https://github.com/SukiSU-Ultra/SukiSU_patch.git SukiSU_patch
-          git -C SukiSU_patch checkout --detach "${SUKISU_PATCH_COMMIT}"
+          test -f SukiSU_patch/69_hide_stuff.patch || { echo "::error::SukiSU_patch missing"; exit 1; }
           cp SukiSU_patch/69_hide_stuff.patch kernel_platform/common/
           cd kernel_platform/common
           echo "=== applying hide_stuff (fuzz allowed, failure tolerated) ==="
